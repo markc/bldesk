@@ -49,7 +49,7 @@ Path aliases: `@shared/*` → `src/shared/*` (all targets), `@renderer/*` → `s
 `src/shared/ipc-types.ts` defines `IpcApi` (vault profiles, native terminal, rescue console, local SSH keys, notifications, window controls, openExternal). Everything platform-specific the renderer needs goes through `window.bldeskApi: IpcApi`.
 
 - **Electron:** `src/preload/index.ts` exposes it via `contextBridge`, each method an `ipcRenderer.invoke('<ns>:<name>')`. Handlers live in `registerIpcHandlers()` in `src/main/index.ts` with channel names `vault:*`, `terminal:*`, `console:*`, `system:*`, `window:*`, `shell:*`.
-- **Android/web:** `src/renderer/src/api/mobile-bridge.ts` `initMobileBridge()` installs a JS implementation backed by `@capacitor/preferences` (falls back to `localStorage`) when `window.bldeskApi` is absent. **Known gap (2026-09-01):** nothing calls `initMobileBridge()` — neither `main.tsx` nor `App.tsx` — so the Capacitor build currently has no `bldeskApi` and `MainDashboard.refreshProfiles()` bails out early.
+- **Android/web:** `src/renderer/src/api/mobile-bridge.ts` `initMobileBridge()` installs a JS implementation backed by `@capacitor/preferences` (falls back to `localStorage`) when `window.bldeskApi` is absent. `App.tsx` dynamically imports and awaits it on startup when `window.bldeskApi` is missing (upstream `2c70e02`), so the Capacitor build gets the bridge without pulling Capacitor into the Electron bundle.
 
 Adding a native capability means touching all three: the `IpcApi` type, the preload + main handler, and the mobile bridge (even if it's a no-op there).
 
@@ -66,6 +66,8 @@ Adding a native capability means touching all three: the `IpcApi` type, the prel
 ### Renderer shell
 
 `App.tsx` `MainDashboard` owns all top-level state: profile list + active profile (loaded via `bldeskApi`), the memoised API client (rebuilt when the active token changes), the active sidebar tab, selected server, and modal open flags. Feature areas are one component directory each under `src/renderer/src/components/` and are switched on `activeTab`; there's no router. Switching profile calls `queryClient.invalidateQueries()`.
+
+Server sub-tabs (`ServerSubTab` in `Sidebar.tsx`) are rendered as `activeSubTab === '…'` branches inside `ServerDetails.tsx`; every id in the sidebar list must have a branch or the pane is silently empty. The Network tab lives in its own `ServerNetwork.tsx` and uses `useNetworkActionMutation` (`queries.ts`), which polls `/v2/actions/{id}` to completion — prefer it over the fire-and-forget `useServerActionMutation` for any action whose result the UI must reflect.
 
 Theming: `ThemeContext` toggles the `dark` class on `<html>` (Tailwind `darkMode: 'class'`), persisted in `localStorage.bldesk_theme`. Brand colours are in `tailwind.config.js` (`brand.*`, `panel.*`) — BinaryLane blue `#017cb6`, gold `#f1ca00`, slate `#343a40` — though many components use the hex literals directly.
 
