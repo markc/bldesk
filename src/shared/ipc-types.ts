@@ -19,6 +19,16 @@ export interface TerminalLaunchOptions {
   privateKeyPath?: string
 }
 
+export interface TerminalLaunchResult {
+  success: boolean
+  /** Why the launch failed — already human-readable. */
+  error?: string
+  /** Which emulator was used (e.g. "konsole", "Terminal.app"). */
+  terminal?: string
+  /** The ssh command line that was (or would have been) run — for clipboard fallback. */
+  command?: string
+}
+
 export interface ConsoleWindowOptions {
   serverId: number
   serverName: string
@@ -49,7 +59,7 @@ export interface IpcApi {
   setActiveProfile: (profileId: string) => Promise<{ success: boolean }>
   
   // Terminal & Console
-  launchNativeTerminal: (options: TerminalLaunchOptions) => Promise<{ success: boolean; error?: string }>
+  launchNativeTerminal: (options: TerminalLaunchOptions) => Promise<TerminalLaunchResult>
   openRescueConsole: (options: ConsoleWindowOptions) => Promise<{ success: boolean }>
   
   // SSH Keys & Local FS

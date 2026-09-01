@@ -1,5 +1,6 @@
 import { Preferences } from '@capacitor/preferences'
 import { AccountProfile, IpcApi } from '@shared/ipc-types'
+import { formatSshCommand, sshUriHost, validateSshTarget } from '@shared/ssh'
 
 const PROFILES_KEY = 'bldesk_profiles_v1'
 const ACTIVE_PROFILE_KEY = 'bldesk_active_profile_id_v1'
@@ -96,9 +97,13 @@ export async function initMobileBridge(): Promise<void> {
       return { success: true }
     },
     launchNativeTerminal: async (opts) => {
-      const uri = `ssh://${opts.username || 'root'}@${opts.host}${opts.port ? `:${opts.port}` : ''}`
+      const invalid = validateSshTarget(opts)
+      if (invalid) return { success: false, error: invalid }
+      // sshUriHost brackets IPv6 and percent-encodes a zone delimiter, as an ssh:// URI needs.
+      const host = sshUriHost(opts.host) ?? opts.host.trim()
+      const uri = `ssh://${opts.username || 'root'}@${host}${opts.port ? `:${opts.port}` : ''}`
       window.open(uri, '_system')
-      return { success: true }
+      return { success: true, terminal: 'ssh:// handler', command: formatSshCommand(opts, 'posix') }
     },
     openRescueConsole: async (opts) => {
       window.open(opts.url, '_blank')

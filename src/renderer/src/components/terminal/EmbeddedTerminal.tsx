@@ -4,6 +4,7 @@ import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { Terminal as TermIcon, Play, RefreshCw, Key } from 'lucide-react'
 import { LocalSshKey } from '@shared/ipc-types'
+import { launchSsh } from '../../lib/launchSsh'
 
 interface EmbeddedTerminalProps {
   initialHost?: string
@@ -69,7 +70,7 @@ export const EmbeddedTerminal: React.FC<EmbeddedTerminalProps> = ({ initialHost 
 
   const handleLaunchNative = () => {
     if (!hostInput) return
-    window.bldeskApi?.launchNativeTerminal?.({
+    launchSsh({
       host: hostInput,
       username: username || 'root',
       privateKeyPath: selectedKeyPath || undefined

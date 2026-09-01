@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { launchSsh } from '../../lib/launchSsh'
 import {
   Server as ServerIcon,
   Play,
@@ -78,7 +79,7 @@ export const ServerList: React.FC<ServerListProps> = ({
 
   const handleLaunchNativeSsh = (ip: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    window.bldeskApi?.launchNativeTerminal?.({ host: ip, username: 'root' })
+    launchSsh({ host: ip, username: 'root' })
   }
 
   const filteredServers = servers.filter((s) => {
