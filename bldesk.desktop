@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=BLDesk
+GenericName=BinaryLane Desktop Client
+Comment=Manage BinaryLane cloud servers, DNS, firewalls and backups
+Exec=/home/markc/Projects/bldesk/node_modules/electron/dist/electron /home/markc/Projects/bldesk
+Path=/home/markc/Projects/bldesk
+Icon=/home/markc/Projects/bldesk/resources/icon.png
+Terminal=false
+Categories=Network;System;Utility;
+Keywords=BinaryLane;cloud;server;VPS;SSH;
+StartupNotify=true
+StartupWMClass=bldesk
