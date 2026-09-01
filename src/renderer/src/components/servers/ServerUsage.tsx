@@ -99,8 +99,8 @@ const UsageSvgChart: React.FC<{
     }
   }, [window])
 
-  const minTime = allTimes.length > 1 ? Math.min(...allTimes) : now - windowDurationMs
-  const maxTime = allTimes.length > 1 ? Math.max(...allTimes) : now
+  const maxTime = now
+  const minTime = now - windowDurationMs
   const timeSpan = maxTime - minTime || 1
 
   // Determine scaling

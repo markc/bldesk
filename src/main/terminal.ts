@@ -93,6 +93,103 @@ function keepOpenScript(argv: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// macOS terminal support
+// ---------------------------------------------------------------------------
+
+interface MacTerminalRunner {
+  name: string
+  isAvailable: () => boolean
+  launch: (argv: string[], command: string) => Promise<void>
+}
+
+function hasMacApp(appName: string): boolean {
+  const userHome = process.env.HOME || ''
+  const candidates = [
+    `/Applications/${appName}.app`,
+    join(userHome, `Applications/${appName}.app`),
+    `/System/Applications/Utilities/${appName}.app`
+  ]
+  return candidates.some((p) => {
+    try {
+      accessSync(p, constants.F_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+const MAC_TERMINALS: MacTerminalRunner[] = [
+  {
+    name: 'Ghostty',
+    isAvailable: () => hasMacApp('Ghostty') || !!findOnPath('ghostty'),
+    launch: async (argv) => {
+      await spawnDetached('open', ['-na', 'Ghostty.app', '--args', '-e', 'sh', '-c', keepOpenScript(argv)])
+    }
+  },
+  {
+    name: 'iTerm2',
+    isAvailable: () => hasMacApp('iTerm') || hasMacApp('iTerm2'),
+    launch: async (argv) => {
+      const asString = keepOpenScript(argv).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      const script = `tell application "iTerm"\n  activate\n  try\n    tell current window to create tab with default profile command "sh -c \\"${asString}\\""\n  on error\n    create window with default profile command "sh -c \\"${asString}\\""\n  end try\nend tell`
+      await spawnDetached('osascript', ['-e', script])
+    }
+  },
+  {
+    name: 'Warp',
+    isAvailable: () => hasMacApp('Warp'),
+    launch: async (argv) => {
+      const ssh = argv.map(shQuote).join(' ')
+      await spawnDetached('open', [`warp://action/new_tab?path=~&command=${encodeURIComponent(ssh)}`])
+    }
+  },
+  {
+    name: 'kitty',
+    isAvailable: () => hasMacApp('kitty') || !!findOnPath('kitty'),
+    launch: async (argv) => {
+      await spawnDetached('open', ['-na', 'kitty.app', '--args', 'sh', '-c', keepOpenScript(argv)])
+    }
+  },
+  {
+    name: 'Alacritty',
+    isAvailable: () => hasMacApp('Alacritty') || !!findOnPath('alacritty'),
+    launch: async (argv) => {
+      await spawnDetached('open', ['-na', 'Alacritty.app', '--args', '-e', 'sh', '-c', keepOpenScript(argv)])
+    }
+  },
+  {
+    name: 'WezTerm',
+    isAvailable: () => hasMacApp('WezTerm') || !!findOnPath('wezterm'),
+    launch: async (argv) => {
+      await spawnDetached('open', ['-na', 'WezTerm.app', '--args', 'start', '--', 'sh', '-c', keepOpenScript(argv)])
+    }
+  },
+  {
+    name: 'Terminal.app',
+    isAvailable: () => true, // default macOS terminal
+    launch: async (argv) => {
+      const asString = keepOpenScript(argv).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      const script = `tell application "Terminal"\n  activate\n  do script "${asString}"\nend tell`
+      await spawnDetached('osascript', ['-e', script])
+    }
+  }
+]
+
+function resolveMacTerminal(): MacTerminalRunner {
+  const preferred = process.env.TERMINAL?.trim().toLowerCase()
+  if (preferred) {
+    const matched = MAC_TERMINALS.find(
+      (t) => t.name.toLowerCase() === preferred || t.name.toLowerCase().includes(preferred)
+    )
+    if (matched && matched.isAvailable()) return matched
+    console.warn(`[Terminal] $TERMINAL="${preferred}" is not available on macOS; defaulting to Terminal.app`)
+  }
+  // Default to native Terminal.app unless explicitly configured via $TERMINAL
+  return MAC_TERMINALS.find((t) => t.name === 'Terminal.app') || MAC_TERMINALS[MAC_TERMINALS.length - 1]
+}
+
+// ---------------------------------------------------------------------------
 // spawn helper: resolve on 'spawn', reject on 'error' — never an uncaught event
 // ---------------------------------------------------------------------------
 
@@ -171,12 +268,19 @@ export async function launchNativeTerminal(options: TerminalLaunchOptions): Prom
     }
 
     if (process.platform === 'darwin') {
-      // AppleScript string literal: escape backslashes and double quotes. The validator
-      // has already rejected control characters, so the literal can't be terminated early.
-      const asString = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-      const script = `tell application "Terminal"\n  activate\n  do script "${asString}"\nend tell`
-      await spawnDetached('osascript', ['-e', script])
-      return { success: true, terminal: 'Terminal.app', command }
+      const term = resolveMacTerminal()
+      try {
+        await term.launch(argv, command)
+        return { success: true, terminal: term.name, command }
+      } catch (err: any) {
+        if (term.name !== 'Terminal.app') {
+          console.warn(`[Terminal] ${term.name} launch failed, falling back to Terminal.app:`, err)
+          const fallback = MAC_TERMINALS.find((t) => t.name === 'Terminal.app')!
+          await fallback.launch(argv, command)
+          return { success: true, terminal: 'Terminal.app', command }
+        }
+        throw err
+      }
     }
 
     const term = resolveLinuxTerminal()

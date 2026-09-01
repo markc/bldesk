@@ -435,7 +435,7 @@ export function useSampleSets(
       if (!client || !serverId) return []
       const query: Record<string, any> = {
         data_interval: interval,
-        per_page: 300
+        per_page: 200
       }
       if (start) query.start = start
       if (end) query.end = end
@@ -555,26 +555,91 @@ export function useServerSnapshots(client: BinaryLaneClient | null, serverId: nu
   })
 }
 
+export interface TakeBackupParams {
+  label?: string
+  backupType?: 'daily' | 'weekly' | 'monthly' | 'temporary'
+  replacementStrategy?: 'none' | 'specified' | 'oldest' | 'newest'
+  backupIdToReplace?: number
+}
+
+export function useServerActions(client: BinaryLaneClient | null, serverId: number | null) {
+  return useQuery({
+    queryKey: ['serverActions', serverId],
+    queryFn: async () => {
+      if (!client || !serverId) return []
+      const { data, error } = await client.GET('/v2/servers/{server_id}/actions', {
+        params: { path: { server_id: serverId } }
+      })
+      if (error) return []
+      return data?.actions || []
+    },
+    enabled: !!client && !!serverId,
+    refetchInterval: 3000
+  })
+}
+
 export function useTakeBackupMutation(client: BinaryLaneClient | null, serverId: number | null) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (label?: string) => {
+    mutationFn: async (params: string | TakeBackupParams | undefined) => {
       if (!client || !serverId) throw new Error('No client or serverId')
+
+      const p: TakeBackupParams = typeof params === 'string' ? { label: params } : params || {}
+      // Default to 'oldest' replacement strategy so that if all slots of this type are occupied,
+      // BinaryLane smoothly replaces/rotates the oldest existing snapshot instead of throwing an error.
+      const replacementStrategy = p.replacementStrategy || (p.backupIdToReplace ? 'specified' : 'oldest')
+      const backupType = replacementStrategy === 'specified' ? undefined : (p.backupType || 'temporary')
+
+      const body: any = {
+        type: 'take_backup',
+        replacement_strategy: replacementStrategy,
+        label: p.label || undefined
+      }
+
+      if (backupType) {
+        body.backup_type = backupType
+      }
+      if (p.backupIdToReplace) {
+        body.backup_id_to_replace = p.backupIdToReplace
+      }
+
       const { data, error } = await client.POST('/v2/servers/{server_id}/actions', {
         params: { path: { server_id: serverId } },
-        body: {
-          type: 'take_backup',
-          replacement_strategy: 'none',
-          label: label || undefined
-        }
+        body
       })
-      if (error) throw new Error(JSON.stringify(error))
+      if (error) {
+        const errorObj = error as any
+        const msg =
+          errorObj?.message ||
+          errorObj?.title ||
+          (errorObj?.errors && Object.values(errorObj.errors).flat().join(', ')) ||
+          JSON.stringify(error)
+        throw new Error(msg)
+      }
       return data?.action
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['serverBackups', serverId] })
       queryClient.invalidateQueries({ queryKey: ['serverSnapshots', serverId] })
+      queryClient.invalidateQueries({ queryKey: ['serverActions', serverId] })
       queryClient.invalidateQueries({ queryKey: ['servers'] })
+    }
+  })
+}
+
+export function useImageDownloadMutation(client: BinaryLaneClient | null) {
+  return useMutation({
+    mutationFn: async (imageId: number) => {
+      if (!client) throw new Error('No client')
+      const { data, error } = await client.GET('/v2/images/{image_id}/download', {
+        params: { path: { image_id: imageId } }
+      })
+      if (error) {
+        const errorObj = error as any
+        const msg = errorObj?.message || errorObj?.title || JSON.stringify(error)
+        throw new Error(msg)
+      }
+      return data?.link
     }
   })
 }
