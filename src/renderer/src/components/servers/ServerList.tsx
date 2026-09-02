@@ -13,13 +13,18 @@ import {
   Plus,
   LayoutGrid,
   List,
-  ShieldAlert
+  ShieldAlert,
+  Link2
 } from 'lucide-react'
 import { components } from '@shared/api/schema'
 import { BinaryLaneClient } from '../../api/client'
 import { useServerActionMutation } from '../../api/queries'
+import { useTrackedActions } from '../../context/ActionTrackerContext'
 import { CreateServerModal } from './CreateServerModal'
 import { logoForDistribution } from '../../lib/distroHelper'
+import { copyDeepLink } from '../../lib/deeplinks'
+import { describeActionType } from '../../lib/actionLabels'
+import { ServerContextMenu, ContextMenuState } from './ServerContextMenu'
 
 type ServerResponse = components['schemas']['Server']
 
@@ -45,8 +50,24 @@ export const ServerList: React.FC<ServerListProps> = ({
   const [copiedIp, setCopiedIp] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [actionInProgressServerId, setActionInProgressServerId] = useState<number | null>(null)
+  const [copiedLinkId, setCopiedLinkId] = useState<number | null>(null)
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+
+  const handleCopyLink = async (serverId: number, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    await copyDeepLink({ kind: 'server', serverId })
+    setCopiedLinkId(serverId)
+    setTimeout(() => setCopiedLinkId(null), 1500)
+  }
+
+  const handleContextMenu = (server: ServerResponse, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ server, x: e.clientX, y: e.clientY })
+  }
 
   const serverAction = useServerActionMutation(client)
+  const { track } = useTrackedActions()
 
   const handleCopyIp = (ip: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -62,10 +83,15 @@ export const ServerList: React.FC<ServerListProps> = ({
 
     setActionInProgressServerId(serverId)
     try {
-      await serverAction.mutateAsync({
+      const queued = await serverAction.mutateAsync({
         serverId,
         actionPayload: { type: actionType }
       })
+      // "Requested" was honest but final — it never said how the action ended.
+      // Tracking turns it into a reported outcome.
+      if (queued) {
+        track(queued, describeActionType(actionType), servers.find((s) => s.id === serverId)?.name)
+      }
       window.bldeskApi?.sendNotification?.({
         title: `Server Action: ${actionType}`,
         body: `Action requested successfully for server #${serverId}.`
@@ -247,6 +273,7 @@ export const ServerList: React.FC<ServerListProps> = ({
                   <tr
                     key={server.id}
                     onClick={() => onSelectServer(server)}
+                    onContextMenu={(e) => handleContextMenu(server, e)}
                     className="hover:bg-[#f8f9fa] dark:hover:bg-[#32383e] cursor-pointer transition"
                   >
                     {/* Server Name & Distro */}
@@ -324,6 +351,13 @@ export const ServerList: React.FC<ServerListProps> = ({
                     {/* Action Buttons */}
                     <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={(e) => handleCopyLink(server.id, e)}
+                          className="p-1.5 text-[#6c757d] hover:text-[#017cb6] hover:bg-black/[0.05] dark:hover:bg-white/[0.06] rounded transition"
+                          title="Copy bldesk:// link"
+                        >
+                          {copiedLinkId === server.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Link2 className="w-3.5 h-3.5" />}
+                        </button>
                         {publicIps[0]?.ip_address && (
                           <button
                             onClick={(e) => handleLaunchNativeSsh(publicIps[0].ip_address, e)}
@@ -465,6 +499,19 @@ export const ServerList: React.FC<ServerListProps> = ({
             )
           })}
         </div>
+      )}
+
+      {/* Right-click context menu */}
+      {contextMenu && (
+        <ServerContextMenu
+          state={contextMenu}
+          onClose={() => setContextMenu(null)}
+          onOpen={(s) => onSelectServer(s)}
+          onSsh={(ip) => launchSsh({ host: ip, username: 'root' })}
+          onCopyLink={(id) => handleCopyLink(id)}
+          onAction={(id, type) => handleAction(id, type, { stopPropagation: () => {} } as React.MouseEvent)}
+          actionInProgress={actionInProgressServerId !== null}
+        />
       )}
 
       {/* Create Server Modal */}

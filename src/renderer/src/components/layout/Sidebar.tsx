@@ -12,8 +12,7 @@ import {
   Terminal,
   Activity,
   ChevronLeft,
-  X
-} from 'lucide-react'
+  X, UserCircle} from 'lucide-react'
 import { DarkModeToggle } from './DarkModeToggle'
 import logoFull from '../../assets/logo-binarylane.png'
 import iconLogo from '../../assets/icon-logo-binarylane.png'
@@ -27,6 +26,7 @@ export type ActiveTab =
   | 'backups'
   | 'keys'
   | 'billing'
+  | 'account'
   | 'terminal'
 
 export type ServerSubTab =
@@ -73,6 +73,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'backups', label: 'Backups', icon: Archive },
     { id: 'keys', label: 'SSH Keys', icon: Key },
     { id: 'billing', label: 'Billing & Invoices', icon: Receipt },
+    { id: 'account', label: 'Account Details', icon: UserCircle },
     { id: 'terminal', label: 'Embedded Shell', icon: Terminal }
   ]
 
@@ -188,6 +189,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <span>Open mPanel Web</span>
                   <ExternalLink className="w-3 h-3 text-slate-400" />
                 </button>
+
+                <div className="flex items-center justify-between px-2 pt-1 text-[10px] text-slate-400">
+                  <span>BLDesk</span>
+                  <span className="font-mono text-slate-300">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.28'}</span>
+                </div>
               </>
             )}
           </div>
@@ -331,6 +337,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span>Open mPanel Web</span>
                 <ExternalLink className="w-3 h-3 text-slate-400" />
               </button>
+              <div className="flex items-center justify-between px-2 pt-1 text-[10px] text-slate-400">
+                <span>BLDesk</span>
+                <span className="font-mono text-slate-300">v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.28'}</span>
+              </div>
             </div>
           </div>
         </div>

@@ -84,6 +84,24 @@ npm run build:linux
 npm run cap:sync
 ```
 
+### 🚀 Cutting a New Release (with Auto-Update)
+
+BLDesk supports cross-platform in-app auto-updating via `electron-updater` and GitHub Releases:
+
+```bash
+# 1. Bump version
+npm version patch --no-git-tag-version
+
+# 2. Commit and tag (tag must match version)
+git commit -am "chore(release): v1.0.X"
+git tag v1.0.X
+
+# 3. Push commit & tag to trigger CI release workflow
+git push && git push --tags
+```
+
+For more in-depth architectural and agent instructions, see [AGENTS.md](AGENTS.md) and [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md).
+
 ---
 
 ## 🛠️ Architecture & Tech Stack
@@ -92,6 +110,7 @@ npm run cap:sync
 * **Bundler**: `electron-vite` + `electron-builder`
 * **Frontend**: React 18 + TypeScript + Tailwind CSS + Lucide Icons
 * **Data Fetching**: TanStack Query v5 (React Query) with custom anti-spam client
+* **Auto-Update**: `electron-updater` with multi-OS GitHub Release manifests
 * **API Schema**: Strongly-typed OpenAPI fetch client generated from BinaryLane OpenAPI 3.0.4
 * **Terminal**: `xterm.js` + `xterm-addon-fit` + `xterm-addon-web-links`
 * **Mobile / Touch**: Capacitor for Android mobile deployments

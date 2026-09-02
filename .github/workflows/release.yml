@@ -1,4 +1,9 @@
-name: Build & Release Multi-OS
+name: Build & Release Desktop
+
+# Tag `vX.Y.Z` → stable release (latest.yml). Tag `vX.Y.Z-beta.N` → GitHub
+# prerelease on the "beta" update channel (beta.yml). electron-builder derives
+# the channel from the semver prerelease component of package.json "version",
+# so the tag and the version field must agree.
 
 on:
   push:
@@ -9,11 +14,16 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build & Package (${{ matrix.os }})
+    name: Build & Publish (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
 
@@ -25,56 +35,87 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
       - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
-      - name: Generate Typed API Schema
-        run: npm run generate-api
+      - name: Verify tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Build Application Bundle
         run: npm run build
 
-      # --- WINDOWS BUILD ---
-      - name: Package for Windows (x64)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
+      - name: Extract Release Notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         run: |
-          npm run pack:win
-          Compress-Archive -Path release/BLDesk-win32-x64/* -DestinationPath release/BLDesk-win-x64.zip -Force
+          node -e '
+            const fs = require("fs");
+            const tag = (process.env.GITHUB_REF_NAME || "").replace(/^v/, "");
+            if (!fs.existsSync("CHANGELOG.md")) process.exit(0);
+            const lines = fs.readFileSync("CHANGELOG.md", "utf8").split("\n");
+            const header = `## [${tag}]`;
+            let inSection = false;
+            const sectionLines = [];
+            for (const line of lines) {
+              if (line.startsWith("## [")) {
+                if (line.startsWith(header)) {
+                  inSection = true;
+                  continue;
+                } else if (inSection) {
+                  break;
+                }
+              }
+              if (inSection) sectionLines.push(line);
+            }
+            const notes = sectionLines.join("\n").replace(/^---$/gm, "").trim();
+            if (notes) {
+              fs.writeFileSync("release-notes.md", notes);
+              console.log("Extracted release notes for " + tag + ":\n" + notes);
+            }
+          '
 
-      # --- MACOS BUILD (Universal: Apple Silicon & Intel) ---
-      - name: Package for macOS (Universal)
-        if: matrix.os == 'macos-latest'
-        run: |
-          npm run pack:mac
-          zip -r -y release/BLDesk-mac-universal.zip release/BLDesk-darwin-universal
+      # --- PUBLISH (tags) ---
+      # electron-builder uploads installers, blockmaps and latest.yml / beta.yml
+      # to a GitHub Release named after the tag, creating it if it doesn't exist.
+      - name: Package & Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned builds: skip macOS code signing / notarisation until a
+          # Developer ID certificate is configured.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --publish always
 
-      # --- LINUX BUILD (x64) ---
-      - name: Package for Linux (x64)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          npm run pack:linux
-          tar -czvf release/BLDesk-linux-x64.tar.gz -C release BLDesk-linux-x64
-          zip -r release/BLDesk-linux-x64.zip release/BLDesk-linux-x64
+      # --- PACKAGE ONLY (manual runs) ---
+      - name: Package (no publish)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --publish never
 
-      # --- UPLOAD ARTIFACTS TO WORKFLOW RUN ---
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: BLDesk-${{ matrix.os }}
+          if-no-files-found: ignore
           path: |
+            release/*.exe
+            release/*.dmg
             release/*.zip
-            release/*.tar.gz
-
-      # --- PUBLISH GITHUB RELEASE ---
-      - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            release/*.zip
-            release/*.tar.gz
-          draft: false
-          prerelease: false
-          generate_release_notes: true
+            release/*.AppImage
+            release/*.deb
+            release/*.yml
+            release/*.blockmap

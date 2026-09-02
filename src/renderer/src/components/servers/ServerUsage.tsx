@@ -3,8 +3,7 @@ import {
   Loader2,
   Calendar,
   Info,
-  Activity
-} from 'lucide-react'
+  Activity, AlertTriangle, ExternalLink} from 'lucide-react'
 import { components } from '@shared/api/schema'
 import { BinaryLaneClient } from '../../api/client'
 import { useSampleSets, useServerMetrics } from '../../api/queries'
@@ -16,6 +15,10 @@ interface ServerUsageProps {
   client: BinaryLaneClient | null
   server: Server
 }
+
+/** Setup instructions for the in-guest agent that reports memory usage. */
+const MEMORY_GRAPH_DOC_URL =
+  'https://support.binarylane.com.au/support/solutions/articles/1000022811-mpanel-memory-graph'
 
 type TimeWindow = 'Day' | 'Week' | 'Month' | 'Year'
 
@@ -53,13 +56,53 @@ const fmtKBpsOrMBps = (v: number) => {
 }
 const fmtRps = (v: number) => `${Math.round(v)} rps`
 
+/**
+ * Series sharing a unit share a scale; different units get their own.
+ *
+ * The chart previously had two fixed axes and put CPU (%), network (KBps) and
+ * disk throughput (KBps) on the same one, capped at 100. Disk activity of a few
+ * thousand KBps clamped to the ceiling while CPU at 2% sat on the floor, and the
+ * axis was labelled "%" while carrying three different units. Grouping by unit
+ * keeps like-for-like series comparable — four CPU cores still share one scale —
+ * without squashing a percentage against a data rate.
+ */
+type ChartUnit = 'percent' | 'gb' | 'rate' | 'rps'
+
 interface ChartSeries {
   name: string
   color: string
   summary: MetricSummary
   formatter: (v: number) => string
+  unit: ChartUnit
   maxScale?: number
+  /** Render this unit's axis labels on the right edge rather than the left. */
   isSecondaryAxis?: boolean
+}
+
+/**
+ * Marker size for a series' data points.
+ *
+ * A day at five-minute resolution is ~288 points across an 800-unit viewBox, so
+ * they sit roughly 2.8 units apart: anything larger than a pixel merges into a
+ * band, and the dark outline each marker used to carry turned that band into
+ * visible noise. Sparse windows keep readable dots; dense ones fade to specks so
+ * the line itself carries the shape.
+ */
+function markerRadius(count: number): number {
+  if (count <= 12) return 3
+  if (count <= 40) return 2
+  if (count <= 120) return 1.4
+  return 0.9
+}
+
+/** Axis tick text for a unit; rates switch to MBps once they get large. */
+function axisLabel(unit: ChartUnit, value: number): string {
+  if (unit === 'rate') {
+    return value >= 1024 ? `${(value / 1024).toFixed(1)} MBps` : `${Math.round(value)} KBps`
+  }
+  if (unit === 'gb') return `${value.toFixed(value < 10 ? 1 : 0)} GB`
+  if (unit === 'rps') return `${Math.round(value)} rps`
+  return `${Math.round(value)}%`
 }
 
 // High-fidelity SVG Multi-Series Line Chart
@@ -68,13 +111,17 @@ const UsageSvgChart: React.FC<{
   subtitle: string
   seriesList: ChartSeries[]
   window: TimeWindow
-  primaryMax?: number
-  secondaryMax?: number
-  secondaryLabel?: string
-}> = ({ title, subtitle, seriesList, window, primaryMax, secondaryMax, secondaryLabel }) => {
+  /**
+   * 'unit' keeps like-for-like series on one scale so they stay comparable —
+   * right for CPU cores or network in/out. 'series' gives every metric its own
+   * scale, which is what a mixed overview needs: a 0.5 KBps network line and a
+   * 2.4 MBps disk line are both data rates, but sharing a scale hides one.
+   */
+  scaleBy?: 'unit' | 'series'
+}> = ({ title, subtitle, seriesList, window, scaleBy = 'unit' }) => {
   const width = 800
   const height = 220
-  const padding = { top: 20, right: 55, bottom: 30, left: 55 }
+  const padding = { top: 20, right: 72, bottom: 30, left: 72 }
   const chartW = width - padding.left - padding.right
   const chartH = height - padding.top - padding.bottom
 
@@ -103,33 +150,52 @@ const UsageSvgChart: React.FC<{
   const minTime = now - windowDurationMs
   const timeSpan = maxTime - minTime || 1
 
-  // Determine scaling
-  const effectivePrimaryMax = useMemo(() => {
-    if (primaryMax !== undefined) return primaryMax
-    const primaryMaxVal = Math.max(
-      ...seriesList.filter((s) => !s.isSecondaryAxis).map((s) => s.summary.max),
-      1
-    )
-    return primaryMaxVal <= 100 ? 100 : Math.ceil(primaryMaxVal * 1.15)
-  }, [seriesList, primaryMax])
+  /**
+   * One scale per unit present, so a percentage is never measured against a data
+   * rate. Series of the same unit keep a shared scale and stay comparable.
+   */
+  const scaleKey = (s: ChartSeries) => (scaleBy === 'series' ? s.name : s.unit)
 
-  const effectiveSecondaryMax = useMemo(() => {
-    if (secondaryMax !== undefined) return secondaryMax
-    const secMaxVal = Math.max(
-      ...seriesList.filter((s) => s.isSecondaryAxis).map((s) => s.summary.max),
-      1
-    )
-    return Math.ceil(secMaxVal * 1.15) || 10
-  }, [seriesList, secondaryMax])
+  const unitScales = useMemo(() => {
+    const groups = new Map<string, { unit: ChartUnit; max: number; color: string; side: 'left' | 'right' }>()
+    for (const s of seriesList) {
+      const peak = s.maxScale ?? s.summary.max
+      const key = scaleBy === 'series' ? s.name : s.unit
+      const existing = groups.get(key)
+      if (existing) {
+        existing.max = Math.max(existing.max, peak)
+      } else {
+        groups.set(key, {
+          unit: s.unit,
+          max: peak,
+          color: s.color,
+          side: s.isSecondaryAxis ? 'right' : 'left'
+        })
+      }
+    }
+    for (const g of groups.values()) {
+      if (g.unit === 'percent') {
+        // Percentages keep a 0-100 frame unless a multi-core total exceeds it.
+        g.max = g.max <= 100 ? 100 : Math.ceil(g.max / 100) * 100
+      } else {
+        // Headroom so a peak never touches the top gridline; never zero.
+        g.max = g.max > 0 ? g.max * 1.15 : 1
+      }
+    }
+    return groups
+  }, [seriesList, scaleBy])
+
+  const leftScales = useMemo(() => [...unitScales.values()].filter((g) => g.side === 'left'), [unitScales])
+  const rightScales = useMemo(() => [...unitScales.values()].filter((g) => g.side === 'right'), [unitScales])
 
   // X Coordinate calculation
   const getX = (t: number) => padding.left + ((t - minTime) / timeSpan) * chartW
 
-  // Y Coordinate calculation
-  const getY = (val: number, isSec: boolean) => {
-    const maxVal = isSec ? effectiveSecondaryMax : effectivePrimaryMax
+  // Y Coordinate calculation, against the series' own unit scale
+  const getY = (val: number, key: string) => {
+    const maxVal = unitScales.get(key)?.max || 1
     const clamped = Math.max(0, Math.min(val, maxVal))
-    return padding.top + chartH - (clamped / (maxVal || 1)) * chartH
+    return padding.top + chartH - (clamped / maxVal) * chartH
   }
 
   // Time grid ticks
@@ -190,30 +256,37 @@ const UsageSvgChart: React.FC<{
                   strokeWidth="1"
                   strokeDasharray={pct === 1 ? 'none' : '2,2'}
                 />
-                {/* Left Y Axis Labels */}
-                <text
-                  x={padding.left - 8}
-                  y={y + 3}
-                  textAnchor="end"
-                  fill="#94a3b8"
-                  fontSize="9"
-                  fontFamily="monospace"
-                >
-                  {Math.round(effectivePrimaryMax * (1 - pct))}%
-                </text>
-                {/* Right Y Axis Labels (if secondary active) */}
-                {secondaryLabel && (
-                  <text
-                    x={width - padding.right + 8}
-                    y={y + 3}
-                    textAnchor="start"
-                    fill="#38bdf8"
-                    fontSize="9"
-                    fontFamily="monospace"
-                  >
-                    {(effectiveSecondaryMax * (1 - pct)).toFixed(0)} GB
-                  </text>
-                )}
+                {/* One label per unit, stacked and coloured to match its series,
+                    so each scale is readable rather than implied. Only the top,
+                    middle and bottom rows are labelled to avoid a wall of text. */}
+                {[0, 0.5, 1].includes(pct) &&
+                  leftScales.map((g, gi) => (
+                    <text
+                      key={`l-${gi}-${g.unit}`}
+                      x={padding.left - 8}
+                      y={y + 3 + (gi - (leftScales.length - 1) / 2) * 10}
+                      textAnchor="end"
+                      fill={g.color}
+                      fontSize="8.5"
+                      fontFamily="monospace"
+                    >
+                      {axisLabel(g.unit, g.max * (1 - pct))}
+                    </text>
+                  ))}
+                {[0, 0.5, 1].includes(pct) &&
+                  rightScales.map((g, gi) => (
+                    <text
+                      key={`r-${gi}-${g.unit}`}
+                      x={width - padding.right + 8}
+                      y={y + 3 + (gi - (rightScales.length - 1) / 2) * 10}
+                      textAnchor="start"
+                      fill={g.color}
+                      fontSize="8.5"
+                      fontFamily="monospace"
+                    >
+                      {axisLabel(g.unit, g.max * (1 - pct))}
+                    </text>
+                  ))}
               </g>
             )
           })}
@@ -248,19 +321,18 @@ const UsageSvgChart: React.FC<{
 
           {/* Plotted Series Lines and Data Points */}
           {seriesList.map((s, idx) => {
-            const isSec = !!s.isSecondaryAxis
             const points = s.summary.data
             if (!points || points.length === 0) return null
 
             let path = ''
             if (points.length === 1) {
-              const y = getY(points[0].value, isSec)
+              const y = getY(points[0].value, scaleKey(s))
               path = `M ${padding.left} ${y.toFixed(1)} L ${(width - padding.right).toFixed(1)} ${y.toFixed(1)}`
             } else {
               path = points
                 .map((p, i) => {
                   const x = getX(p.time)
-                  const y = getY(p.value, isSec)
+                  const y = getY(p.value, scaleKey(s))
                   return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
                 })
                 .join(' ')
@@ -279,16 +351,14 @@ const UsageSvgChart: React.FC<{
                 />
                 {points.map((p, pIdx) => {
                   const cx = getX(p.time)
-                  const cy = getY(p.value, isSec)
+                  const cy = getY(p.value, scaleKey(s))
                   return (
                     <circle
                       key={pIdx}
                       cx={cx}
                       cy={cy}
-                      r={points.length <= 10 ? 3.5 : 2}
+                      r={markerRadius(points.length)}
                       fill={s.color}
-                      stroke="#1e2227"
-                      strokeWidth="1"
                     >
                       <title>{`${s.name}: ${s.formatter(p.value)} (${new Date(p.time).toLocaleTimeString()})`}</title>
                     </circle>
@@ -424,9 +494,14 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
       }
 
       // Memory (bytes -> GB)
-      if (sample.average?.memory_usage_bytes !== undefined) {
-        const memGB = sample.average.memory_usage_bytes / (1024 * 1024 * 1024)
-        pushSample(memory, time, memGB)
+      // A server with no Memory Graph agent reports memory_usage_bytes as exactly 0,
+      // not null or absent — verified against a Windows box without the agent while
+      // its CPU and storage reported normally. Zero memory on a running server is
+      // impossible, so it is a sentinel, not a reading. Plotting it drew a flat
+      // zero line and printed "0.00 GB", asserting the server used no memory.
+      const memBytes = sample.average?.memory_usage_bytes
+      if (memBytes !== undefined && memBytes > 0) {
+        pushSample(memory, time, memBytes / (1024 * 1024 * 1024))
       }
 
       // Disk Storage (MB -> GB)
@@ -473,18 +548,29 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
   const timeTabs: TimeWindow[] = ['Day', 'Week', 'Month', 'Year']
 
   // 1. Activity Overview Series List
-  const activitySeriesList: ChartSeries[] = [
+  /**
+   * Memory reporting depends on an in-guest agent, so it can be absent on an
+   * otherwise healthy server. The API has no capability flag for it — /v2/software
+   * lists only licensed products and has no Memory Graph entry — so absence is
+   * inferred from having samples for other metrics but none for memory.
+   */
+  const memoryUnavailable =
+    metricSummaries.memory.data.length === 0 && metricSummaries.diskUsage.data.length > 0
+
+  const activityAllSeries: ChartSeries[] = [
     {
       name: 'CPU Usage',
       color: '#48bb78',
       summary: metricSummaries.cpuOverall,
-      formatter: fmtPercent
+      formatter: fmtPercent,
+      unit: 'percent'
     },
     {
       name: 'Memory Usage',
       color: '#ecc94b',
       summary: metricSummaries.memory,
       formatter: fmtGB,
+      unit: 'gb',
       isSecondaryAxis: true
     },
     {
@@ -492,28 +578,38 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
       color: '#38bdf8',
       summary: metricSummaries.diskUsage,
       formatter: fmtGB,
+      unit: 'gb',
       isSecondaryAxis: true
     },
     {
       name: 'Network Activity',
       color: '#ed8936',
       summary: metricSummaries.networkActivity,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     },
     {
       name: 'Disk Activity',
       color: '#f56565',
       summary: metricSummaries.diskActivity,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     }
   ]
+
+  // Drop the memory series entirely when the guest isn't reporting it, so the
+  // chart, legend and summary table stay silent about it rather than showing zero.
+  const activitySeriesList = activityAllSeries.filter(
+    (sr) => !(memoryUnavailable && sr.name === 'Memory Usage')
+  )
 
   // 2. CPU Detail Series List
   const cpuDetailSeriesList: ChartSeries[] = metricSummaries.cpuCores.map((core, i) => ({
     name: `CPU ${i + 1}`,
     color: ['#48bb78', '#38bdf8', '#ecc94b', '#ed8936', '#9f7aea', '#f56565'][i % 6],
     summary: core,
-    formatter: fmtPercent
+    formatter: fmtPercent,
+      unit: 'percent'
   }))
 
   // 3. Network Detail Series List
@@ -522,13 +618,15 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
       name: 'Network In',
       color: '#38bdf8',
       summary: metricSummaries.networkIn,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     },
     {
       name: 'Network Out',
       color: '#ed8936',
       summary: metricSummaries.networkOut,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     }
   ]
 
@@ -538,25 +636,29 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
       name: 'Disk Read Rate',
       color: '#38bdf8',
       summary: metricSummaries.diskRead,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     },
     {
       name: 'Disk Write Rate',
       color: '#f56565',
       summary: metricSummaries.diskWrite,
-      formatter: fmtKBpsOrMBps
+      formatter: fmtKBpsOrMBps,
+      unit: 'rate'
     },
     {
       name: 'Read IOPS',
       color: '#48bb78',
       summary: metricSummaries.diskReadOps,
-      formatter: fmtRps
+      formatter: fmtRps,
+      unit: 'rps'
     },
     {
       name: 'Write IOPS',
       color: '#ecc94b',
       summary: metricSummaries.diskWriteOps,
-      formatter: fmtRps
+      formatter: fmtRps,
+      unit: 'rps'
     }
   ]
 
@@ -643,13 +745,32 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
       )}
 
       {/* 1. Activity Overview */}
+      {memoryUnavailable && (
+        <div className="flex items-start gap-2.5 p-3 rounded-lg border border-amber-400 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-xs">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold">Memory Usage Unavailable</div>
+            <div className="opacity-90 mt-0.5">
+              Memory usage can be reported if you install the{' '}
+              <button
+                onClick={() => window.bldeskApi?.openExternal?.(MEMORY_GRAPH_DOC_URL)}
+                className="underline font-medium hover:no-underline inline-flex items-center gap-1"
+              >
+                Memory Graph
+                <ExternalLink className="w-3 h-3" />
+              </button>{' '}
+              service.
+            </div>
+          </div>
+        </div>
+      )}
+
       <UsageSvgChart
         title="Activity Overview"
         subtitle={server.name}
         seriesList={activitySeriesList}
         window={activeWindow}
-        primaryMax={100}
-        secondaryLabel="Capacity"
+        scaleBy="series"
       />
 
       {/* 2. CPU Detail */}
@@ -659,7 +780,6 @@ export const ServerUsage: React.FC<ServerUsageProps> = ({ client, server }) => {
           subtitle={`${server.name} (${server.vcpus} vCPUs)`}
           seriesList={cpuDetailSeriesList}
           window={activeWindow}
-          primaryMax={100}
         />
       )}
 

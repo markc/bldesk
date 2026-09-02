@@ -1,6 +1,6 @@
 {
   "name": "bldesk",
-  "version": "1.0.27",
+  "version": "1.0.34",
   "type": "module",
   "description": "BinaryLane Cloud Desktop Client",
   "main": "./out/main/index.js",
@@ -15,44 +15,89 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run generate-api && electron-vite build",
-    "pack:win": "npx @electron/packager . BLDesk --platform=win32 --arch=x64 --out=release --overwrite --icon=resources/icon.ico --extra-resource=resources --ignore=src",
-    "pack:mac": "npx @electron/packager . BLDesk --platform=darwin --arch=universal --out=release --overwrite --icon=resources/icon.png --extra-resource=resources --ignore=src",
-    "pack:linux": "npx @electron/packager . BLDesk --platform=linux --arch=x64 --out=release --overwrite --icon=resources/icon.png --extra-resource=resources --ignore=src",
     "cap:sync": "npm run build && npx cap sync android",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "build:linux": "npm run build && electron-builder --linux",
+    "release": "npm run build && electron-builder --publish always"
   },
   "build": {
     "appId": "com.termau.bldesk",
     "productName": "BLDesk",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
-    },
-    "mac": {
-      "icon": "resources/icon.png",
-      "target": [
-        "dmg",
-        "zip",
-        "dir"
-      ]
     },
     "files": [
       "out/**/*"
     ],
-    "win": {
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "termau",
+      "repo": "bldesk",
+      "releaseType": "release"
+    },
+    "protocols": [
+      {
+        "name": "BLDesk",
+        "schemes": [
+          "bldesk"
+        ],
+        "role": "Viewer"
+      }
+    ],
+    "mac": {
+      "icon": "resources/icon.png",
+      "category": "public.app-category.developer-tools",
       "target": [
-        "dir",
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ]
+    },
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        "nsis",
         "portable"
       ],
-      "sign": null,
       "verifyUpdateCodeSignature": false
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${os}-${arch}-portable.${ext}"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "icon": "resources/icon.png",
+      "category": "Development",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
     }
   },
   "dependencies": {
@@ -63,6 +108,7 @@
     "@electron-toolkit/utils": "^3.0.0",
     "@tanstack/react-query": "^5.60.5",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.3.9",
     "lucide-react": "^0.460.0",
     "openapi-fetch": "^0.13.3",
     "react": "^18.3.1",
@@ -74,7 +120,6 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",
-    "@electron/packager": "^20.3.0",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

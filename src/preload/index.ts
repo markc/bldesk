@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IpcApi } from '../shared/ipc-types'
+import { IpcApi, UpdaterState } from '../shared/ipc-types'
 
 const api: IpcApi = {
   // Vault & Auth
@@ -26,7 +26,27 @@ const api: IpcApi = {
   isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
 
   // External Links
-  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+
+  // Auto-update
+  getUpdaterState: () => ipcRenderer.invoke('updater:getState'),
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  setUpdateChannel: (channel) => ipcRenderer.invoke('updater:setChannel', channel),
+  onUpdaterState: (listener) => {
+    const handler = (_: Electron.IpcRendererEvent, state: UpdaterState) => listener(state)
+    ipcRenderer.on('updater:state', handler)
+    return () => ipcRenderer.removeListener('updater:state', handler)
+  },
+
+  // Deep links (bldesk://)
+  getPendingDeepLink: () => ipcRenderer.invoke('deeplink:getPending'),
+  deepLinkReady: () => ipcRenderer.invoke('deeplink:ready'),
+  onDeepLink: (listener) => {
+    const handler = (_: Electron.IpcRendererEvent, url: string) => listener(url)
+    ipcRenderer.on('deeplink:open', handler)
+    return () => ipcRenderer.removeListener('deeplink:open', handler)
+  }
 }
 
 if (process.contextIsolated) {

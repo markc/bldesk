@@ -24,6 +24,7 @@ import {
   useDetachBackupMutation,
   useImageDownloadMutation
 } from '../../api/queries'
+import { useTrackedActions } from '../../context/ActionTrackerContext'
 
 interface BackupManagerProps {
   client: BinaryLaneClient | null
@@ -49,6 +50,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
   // Mutations
   const takeBackupMutation = useTakeBackupMutation(client, activeServerId)
   const restoreBackupMutation = useRestoreBackupMutation(client, activeServerId)
+  const { track } = useTrackedActions()
   const toggleAutomatedBackups = useToggleAutomatedBackupsMutation(client, activeServerId)
   const attachBackupMutation = useAttachBackupMutation(client, activeServerId)
   const detachBackupMutation = useDetachBackupMutation(client, activeServerId)
@@ -92,12 +94,16 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
     }
 
     try {
-      await takeBackupMutation.mutateAsync({
+      const queued = await takeBackupMutation.mutateAsync({
         label: snapshotLabel.trim() || undefined,
         backupType,
         replacementStrategy,
         backupIdToReplace
       })
+      // A backup of a 40 GB disk runs for minutes and reports rich progress
+      // while it does. Tracking it means the user learns whether it landed,
+      // instead of only that it started.
+      if (queued) track(queued, 'Take Backup', activeServer?.name)
       window.bldeskApi?.sendNotification?.({
         title: 'Snapshot Initiated',
         body: `Snapshot creation started for server #${activeServerId}.`
@@ -117,7 +123,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
 
     setActionProcessingId(imageId)
     try {
-      await restoreBackupMutation.mutateAsync(imageId)
+      const queued = await restoreBackupMutation.mutateAsync(imageId)
+      // A restore overwrites the disk and runs for a while. "Initiated" was true
+      // but the user was never told whether it actually landed.
+      if (queued) track(queued, `Restore from "${name}"`, activeServer?.name)
       window.bldeskApi?.sendNotification?.({
         title: 'Restore Initiated',
         body: `Server #${activeServerId} is restoring from image #${imageId}.`
@@ -134,10 +143,14 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
     if (!activeServerId) return
     setActionProcessingId(imageId)
     try {
-      await attachBackupMutation.mutateAsync(imageId)
+      const queued = await attachBackupMutation.mutateAsync(imageId)
+      if (queued) track(queued, `Attach "${name}"`, activeServer?.name)
+      // Was "Backup Attached" / "mounted as secondary drive" at queue time,
+      // which is a claim about something that had not happened yet. The toast
+      // reports the mount when BinaryLane actually confirms it.
       window.bldeskApi?.sendNotification?.({
-        title: 'Backup Attached',
-        body: `Image "${name}" mounted as secondary drive.`
+        title: 'Attach Requested',
+        body: `Mounting "${name}" as a secondary drive.`
       })
     } catch (err: any) {
       alert(`Attach failed: ${err.message}`)
@@ -168,10 +181,11 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
   const handleDetach = async () => {
     if (!activeServerId) return
     try {
-      await detachBackupMutation.mutateAsync()
+      const queued = await detachBackupMutation.mutateAsync()
+      if (queued) track(queued, 'Detach Secondary Drive', activeServer?.name)
       window.bldeskApi?.sendNotification?.({
-        title: 'Drive Detached',
-        body: `Secondary backup drive unmounted successfully.`
+        title: 'Detach Requested',
+        body: `Unmounting the secondary backup drive.`
       })
     } catch (err: any) {
       alert(`Detach failed: ${err.message}`)
@@ -185,10 +199,11 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ client, initialSer
     if (!confirm(`${enable ? 'Enable' : 'Disable'} automated nightly backups for ${activeServer?.name}?`)) return
 
     try {
-      await toggleAutomatedBackups.mutateAsync(enable)
+      const queued = await toggleAutomatedBackups.mutateAsync(enable)
+      if (queued) track(queued, `${enable ? 'Enable' : 'Disable'} Automated Backups`, activeServer?.name)
       window.bldeskApi?.sendNotification?.({
-        title: 'Backup Schedule Updated',
-        body: `Automated backups ${enable ? 'enabled' : 'disabled'} for server #${activeServerId}.`
+        title: 'Schedule Change Requested',
+        body: `${enable ? 'Enabling' : 'Disabling'} automated backups for server #${activeServerId}.`
       })
     } catch (err: any) {
       alert(`Schedule update failed: ${err.message}`)

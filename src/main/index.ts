@@ -4,7 +4,9 @@ import { existsSync, readdirSync, readFileSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { VaultManager } from './safeStorage'
 import { launchNativeTerminal } from './terminal'
-import { ConsoleWindowOptions, SystemNotificationOptions, TerminalLaunchOptions } from '../shared/ipc-types'
+import { UpdaterManager } from './updater'
+import { DeepLinkManager } from './deeplink'
+import { ConsoleWindowOptions, SystemNotificationOptions, TerminalLaunchOptions, UpdateChannel } from '../shared/ipc-types'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -70,7 +72,16 @@ function getAppIcon(): NativeImage {
 }
 
 function getTrayIcon(): NativeImage {
-  const trayPath = getIconPath('tray.png')
+  const icoPath = getIconPath('icon.ico')
+  if (process.platform === 'win32' && existsSync(icoPath)) {
+    try {
+      const img = nativeImage.createFromPath(icoPath)
+      if (!img.isEmpty()) return img
+    } catch {
+      // fallback
+    }
+  }
+  const trayPath = getIconPath('tray-16.png')
   if (existsSync(trayPath)) {
     try {
       const img = nativeImage.createFromPath(trayPath)
@@ -121,6 +132,14 @@ function createWindow(): void {
     }
   })
 
+  // Fallback to ensure window is visible once loaded
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
+
   // Enable Cmd+Option+I and F12 to toggle DevTools, and Cmd+R / F5 to reload
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown') {
@@ -157,6 +176,7 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    DeepLinkManager.onWindowClosed()
   })
 }
 
@@ -276,6 +296,16 @@ function registerIpcHandlers(): void {
   ipcMain.handle('shell:openExternal', async (_, url: string) => {
     await shell.openExternal(url)
   })
+
+  // Deep links (bldesk://)
+  ipcMain.handle('deeplink:getPending', () => DeepLinkManager.takePending())
+  ipcMain.handle('deeplink:ready', () => DeepLinkManager.markRendererReady())
+
+  // Auto-update
+  ipcMain.handle('updater:getState', () => UpdaterManager.getState())
+  ipcMain.handle('updater:check', () => UpdaterManager.check())
+  ipcMain.handle('updater:install', () => UpdaterManager.install())
+  ipcMain.handle('updater:setChannel', (_, channel: UpdateChannel) => UpdaterManager.setChannel(channel))
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
@@ -283,11 +313,21 @@ const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
+    }
+    // Windows / Linux deliver bldesk:// links to the running instance via argv
+    DeepLinkManager.handleSecondInstance(argv)
+  })
+
+  // Must be registered before `ready` so a cold-start open-url on macOS is caught
+  DeepLinkManager.register({
+    getWindow: () => mainWindow,
+    ensureWindow: () => {
+      if (!mainWindow && app.isReady()) createWindow()
     }
   })
 
@@ -301,6 +341,7 @@ if (!gotTheLock) {
     registerIpcHandlers()
     createWindow()
     createTray()
+    UpdaterManager.init()
 
     app.on('activate', function () {
       if (mainWindow === null || BrowserWindow.getAllWindows().length === 0) {
@@ -314,5 +355,9 @@ if (!gotTheLock) {
 
   app.on('window-all-closed', () => {
     app.quit()
+  })
+
+  app.on('before-quit', () => {
+    UpdaterManager.dispose()
   })
 }

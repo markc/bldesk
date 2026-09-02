@@ -24,9 +24,11 @@ import {
   useServers,
   useServerThresholdAlerts,
   useAvailableAdvancedFeatures,
-  useNetworkActionMutation,
-  networkActionMutationKey
+  useServerActionWithHandoff,
+  networkActionMutationKey,
+  actionFailureMessage
 } from '../../api/queries'
+import { useTrackedActions } from '../../context/ActionTrackerContext'
 import { useIsMutating } from '@tanstack/react-query'
 
 type Server = components['schemas']['Server']
@@ -57,7 +59,8 @@ export const ServerSettings: React.FC<ServerSettingsProps> = ({ client, server: 
   const alertsQuery = useServerThresholdAlerts(client, server.id)
   const advancedQuery = useAvailableAdvancedFeatures(client, server.id)
 
-  const actionMutation = useNetworkActionMutation(client, server.id)
+  const actionMutation = useServerActionWithHandoff(client, server.id)
+  const { track } = useTrackedActions()
   const mutatingCount = useIsMutating({ mutationKey: networkActionMutationKey(server.id) })
   const busy = mutatingCount > 0 || actionMutation.isPending
 
@@ -141,9 +144,34 @@ export const ServerSettings: React.FC<ServerSettingsProps> = ({ client, server: 
     setErrorMsg(null)
     setNotice(null)
     try {
-      await actionMutation.mutateAsync(payload)
-      setNotice(`"${label}" completed successfully.`)
-      return true
+      const outcome = await actionMutation.mutateAsync(payload)
+      switch (outcome.state) {
+        case 'completed':
+          setNotice(`"${label}" completed successfully.`)
+          return true
+        case 'handed-off':
+          // A rebuild or a region migration legitimately outlasts any sensible
+          // UI block. Release the panel and let the toast report the real
+          // outcome rather than calling a healthy operation failed.
+          track(outcome.action, label, server.name)
+          setNotice(`"${label}" is still running on BinaryLane. You will be notified when it finishes.`)
+          return true
+        case 'awaiting-interaction':
+          track(outcome.action, label, server.name)
+          setNotice(`"${label}" is waiting for your answer — see the prompt.`)
+          return true
+        case 'blocked-by-invoice':
+          // Tracked as well: paying the invoice may release it, and the toast is
+          // then what reports the real outcome.
+          track(outcome.action, label, server.name)
+          setErrorMsg(
+            `"${label}" is blocked by invoice #${outcome.action.blocking_invoice_id}, which requires payment.`
+          )
+          return false
+        case 'errored':
+          setErrorMsg(actionFailureMessage(label, outcome.action))
+          return false
+      }
     } catch (err: any) {
       setErrorMsg(err.message || `Failed to execute ${label}`)
       return false
